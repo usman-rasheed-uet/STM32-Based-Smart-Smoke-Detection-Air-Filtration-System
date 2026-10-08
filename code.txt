@@ -1,0 +1,513 @@
+#include "main.h"
+#include "adc.h"
+#include "i2c.h"
+#include "usart.h"
+#include "gpio.h"
+#include "ssd1306.h"
+#include "fonts.h"
+
+#include <stdio.h>
+#include <stdint.h>
+
+/* =========================================================
+   THRESHOLDS
+   ========================================================= */
+
+#define MQ2_THRESHOLD      1100
+#define MQ135_THRESHOLD    1100
+
+
+/* =========================================================
+   FAN PINS
+   =========================================================
+
+   Fan 1 -> PB0
+   Fan 2 -> PA8
+
+   ACTIVE-LOW RELAYS:
+   GPIO_PIN_RESET = FAN ON
+   GPIO_PIN_SET   = FAN OFF
+   ========================================================= */
+
+#define FAN1_PORT          GPIOB
+#define FAN1_PIN           GPIO_PIN_0
+
+#define FAN2_PORT          GPIOA
+#define FAN2_PIN           GPIO_PIN_8
+
+
+/* =========================================================
+   LED PINS
+   ========================================================= */
+
+#define GREEN_LED_PORT     GPIOB
+#define GREEN_LED_PIN      GPIO_PIN_12
+
+#define RED_LED_PORT       GPIOB
+#define RED_LED_PIN        GPIO_PIN_13
+
+
+/* =========================================================
+   BUZZER PIN
+   ========================================================= */
+
+#define BUZZER_PORT        GPIOB
+#define BUZZER_PIN         GPIO_PIN_14
+
+
+/* =========================================================
+   VARIABLES
+   ========================================================= */
+
+uint32_t mq2_value = 0;
+uint32_t mq135_value = 0;
+
+char oled_buffer[32];
+
+
+/* =========================================================
+   FUNCTION PROTOTYPES
+   ========================================================= */
+
+void SystemClock_Config(void);
+uint32_t Read_ADC_Channel(void);
+
+
+/* =========================================================
+   ADC READ FUNCTION
+   ========================================================= */
+
+uint32_t Read_ADC_Channel(void)
+{
+    uint32_t adc_value = 0;
+
+    if (HAL_ADC_Start(&hadc1) == HAL_OK)
+    {
+        if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK)
+        {
+            adc_value = HAL_ADC_GetValue(&hadc1);
+        }
+
+        HAL_ADC_Stop(&hadc1);
+    }
+
+    return adc_value;
+}
+
+
+/* =========================================================
+   MAIN
+   ========================================================= */
+
+int main(void)
+{
+    /* =====================================================
+       HAL INITIALIZATION
+       ===================================================== */
+
+    HAL_Init();
+
+
+    /* =====================================================
+       SYSTEM CLOCK
+       ===================================================== */
+
+    SystemClock_Config();
+
+
+    /* =====================================================
+       PERIPHERAL INITIALIZATION
+       ===================================================== */
+
+    MX_GPIO_Init();
+    MX_I2C2_Init();
+    MX_ADC1_Init();
+    MX_USART1_UART_Init();
+
+
+    /* =====================================================
+       INITIAL OUTPUT STATE
+
+       Air starts as CLEAN:
+
+       Fan 1 OFF
+       Fan 2 ON
+       Green LED ON
+       Red LED OFF
+       Buzzer OFF
+       ===================================================== */
+
+    /* Fan 1 OFF - active LOW relay */
+    HAL_GPIO_WritePin(FAN1_PORT,
+                      FAN1_PIN,
+                      GPIO_PIN_SET);
+
+    /* Fan 2 ON - active LOW relay */
+    HAL_GPIO_WritePin(FAN2_PORT,
+                      FAN2_PIN,
+                      GPIO_PIN_RESET);
+
+    /* Green LED ON */
+    HAL_GPIO_WritePin(GREEN_LED_PORT,
+                      GREEN_LED_PIN,
+                      GPIO_PIN_SET);
+
+    /* Red LED OFF */
+    HAL_GPIO_WritePin(RED_LED_PORT,
+                      RED_LED_PIN,
+                      GPIO_PIN_RESET);
+
+    /* Buzzer OFF */
+    HAL_GPIO_WritePin(BUZZER_PORT,
+                      BUZZER_PIN,
+                      GPIO_PIN_RESET);
+
+
+    /* =====================================================
+       OLED STARTUP SCREEN
+       ===================================================== */
+
+    SSD1306_Init();
+
+    SSD1306_Clear();
+
+    SSD1306_GotoXY(0, 0);
+    SSD1306_Puts("AIR FILTER",
+                 &Font_7x10,
+                 1);
+
+    SSD1306_GotoXY(0, 20);
+    SSD1306_Puts("Starting...",
+                 &Font_7x10,
+                 1);
+
+    SSD1306_UpdateScreen();
+
+    HAL_Delay(2000);
+
+
+    /* =====================================================
+       MAIN LOOP
+       ===================================================== */
+
+    while (1)
+    {
+        /* =================================================
+           READ MQ-2
+           ================================================= */
+
+        mq2_value = Read_ADC_Channel();
+
+        HAL_Delay(10);
+
+
+        /* =================================================
+           READ MQ-135
+           ================================================= */
+
+        mq135_value = Read_ADC_Channel();
+
+
+        /* =================================================
+           AIR QUALITY CONTROL
+
+           AIR NOT CLEAR:
+           MQ2 >= 1100 OR MQ135 >= 1100
+
+           Fan 1 ON
+           Fan 2 OFF
+           Red LED ON
+           Green LED OFF
+           Buzzer ON
+
+
+           AIR CLEAR:
+           MQ2 < 1100 AND MQ135 < 1100
+
+           Fan 1 OFF
+           Fan 2 ON
+           Green LED ON
+           Red LED OFF
+           Buzzer OFF
+           ================================================= */
+
+        if ((mq2_value >= MQ2_THRESHOLD) ||
+            (mq135_value >= MQ135_THRESHOLD))
+        {
+            /* =============================================
+               AIR NOT CLEAR / SMOKE DETECTED
+               ============================================= */
+
+            /* Fan 1 ON */
+            HAL_GPIO_WritePin(FAN1_PORT,
+                              FAN1_PIN,
+                              GPIO_PIN_RESET);
+
+            /* Fan 2 OFF */
+            HAL_GPIO_WritePin(FAN2_PORT,
+                              FAN2_PIN,
+                              GPIO_PIN_SET);
+
+            /* Red LED ON */
+            HAL_GPIO_WritePin(RED_LED_PORT,
+                              RED_LED_PIN,
+                              GPIO_PIN_SET);
+
+            /* Green LED OFF */
+            HAL_GPIO_WritePin(GREEN_LED_PORT,
+                              GREEN_LED_PIN,
+                              GPIO_PIN_RESET);
+
+            /* Buzzer ON */
+            HAL_GPIO_WritePin(BUZZER_PORT,
+                              BUZZER_PIN,
+                              GPIO_PIN_SET);
+        }
+        else
+        {
+            /* =============================================
+               AIR CLEAR
+               ============================================= */
+
+            /* Fan 1 OFF */
+            HAL_GPIO_WritePin(FAN1_PORT,
+                              FAN1_PIN,
+                              GPIO_PIN_SET);
+
+            /* Fan 2 ON */
+            HAL_GPIO_WritePin(FAN2_PORT,
+                              FAN2_PIN,
+                              GPIO_PIN_RESET);
+
+            /* Green LED ON */
+            HAL_GPIO_WritePin(GREEN_LED_PORT,
+                              GREEN_LED_PIN,
+                              GPIO_PIN_SET);
+
+            /* Red LED OFF */
+            HAL_GPIO_WritePin(RED_LED_PORT,
+                              RED_LED_PIN,
+                              GPIO_PIN_RESET);
+
+            /* Buzzer OFF */
+            HAL_GPIO_WritePin(BUZZER_PORT,
+                              BUZZER_PIN,
+                              GPIO_PIN_RESET);
+        }
+
+
+        /* =================================================
+           OLED DISPLAY
+           ================================================= */
+
+        SSD1306_Clear();
+
+
+        /* =================================================
+           MQ-2 VALUE
+           ================================================= */
+
+        SSD1306_GotoXY(0, 0);
+
+        SSD1306_Puts("MQ2:",
+                     &Font_7x10,
+                     1);
+
+        sprintf(oled_buffer,
+                "%lu",
+                mq2_value);
+
+        SSD1306_GotoXY(35, 0);
+
+        SSD1306_Puts(oled_buffer,
+                     &Font_7x10,
+                     1);
+
+
+        /* =================================================
+           MQ-135 VALUE
+           ================================================= */
+
+        SSD1306_GotoXY(0, 15);
+
+        SSD1306_Puts("MQ135:",
+                     &Font_7x10,
+                     1);
+
+        sprintf(oled_buffer,
+                "%lu",
+                mq135_value);
+
+        SSD1306_GotoXY(45, 15);
+
+        SSD1306_Puts(oled_buffer,
+                     &Font_7x10,
+                     1);
+
+
+        /* =================================================
+           AIR STATUS
+           ================================================= */
+
+        SSD1306_GotoXY(0, 30);
+
+        if ((mq2_value >= MQ2_THRESHOLD) ||
+            (mq135_value >= MQ135_THRESHOLD))
+        {
+            SSD1306_Puts("SMOKE / POOR",
+                         &Font_7x10,
+                         1);
+        }
+        else
+        {
+            SSD1306_Puts("AIR: CLEAN",
+                         &Font_7x10,
+                         1);
+        }
+
+
+        /* =================================================
+           FAN STATUS
+           ================================================= */
+
+        SSD1306_GotoXY(0, 45);
+
+        if ((mq2_value >= MQ2_THRESHOLD) ||
+            (mq135_value >= MQ135_THRESHOLD))
+        {
+            SSD1306_Puts("F1:ON F2:OFF",
+                         &Font_7x10,
+                         1);
+        }
+        else
+        {
+            SSD1306_Puts("F1:OFF F2:ON",
+                         &Font_7x10,
+                         1);
+        }
+
+
+        /* =================================================
+           UPDATE OLED
+           ================================================= */
+
+        SSD1306_UpdateScreen();
+
+
+        /* Small delay */
+        HAL_Delay(500);
+    }
+}
+
+
+/* =========================================================
+   SYSTEM CLOCK CONFIGURATION
+   ========================================================= */
+
+void SystemClock_Config(void)
+{
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+
+
+    /* =====================================================
+       HSI = 8 MHz
+       ===================================================== */
+
+    RCC_OscInitStruct.OscillatorType =
+        RCC_OSCILLATORTYPE_HSI;
+
+    RCC_OscInitStruct.HSIState =
+        RCC_HSI_ON;
+
+    RCC_OscInitStruct.HSICalibrationValue =
+        RCC_HSICALIBRATION_DEFAULT;
+
+    RCC_OscInitStruct.PLL.PLLState =
+        RCC_PLL_NONE;
+
+
+    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+
+    /* =====================================================
+       CLOCK DIVIDERS
+       ===================================================== */
+
+    RCC_ClkInitStruct.ClockType =
+        RCC_CLOCKTYPE_HCLK |
+        RCC_CLOCKTYPE_SYSCLK |
+        RCC_CLOCKTYPE_PCLK1 |
+        RCC_CLOCKTYPE_PCLK2;
+
+    RCC_ClkInitStruct.SYSCLKSource =
+        RCC_SYSCLKSOURCE_HSI;
+
+    RCC_ClkInitStruct.AHBCLKDivider =
+        RCC_SYSCLK_DIV1;
+
+    RCC_ClkInitStruct.APB1CLKDivider =
+        RCC_HCLK_DIV1;
+
+    RCC_ClkInitStruct.APB2CLKDivider =
+        RCC_HCLK_DIV1;
+
+
+    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct,
+                            FLASH_LATENCY_0) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+
+    /* =====================================================
+       ADC CLOCK
+       ===================================================== */
+
+    PeriphClkInit.PeriphClockSelection =
+        RCC_PERIPHCLK_ADC;
+
+    PeriphClkInit.AdcClockSelection =
+        RCC_ADCPCLK2_DIV2;
+
+
+    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit)
+        != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+
+/* =========================================================
+   ERROR HANDLER
+   ========================================================= */
+
+void Error_Handler(void)
+{
+    __disable_irq();
+
+    while (1)
+    {
+    }
+}
+
+
+#ifdef USE_FULL_ASSERT
+
+/* =========================================================
+   ASSERT FAILED
+   ========================================================= */
+
+void assert_failed(uint8_t *file, uint32_t line)
+{
+    /* USER CODE BEGIN 6 */
+
+    /* USER CODE END 6 */
+}
+
+#endif
